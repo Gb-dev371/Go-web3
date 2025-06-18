@@ -1,63 +1,69 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"math/big"
 
-	"go_web3/client"
-	"go_web3/contract"
-
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
+
+	"go_web3/contract"
+	"go_web3/utils"
 )
 
-func getStakedLiquidity(rpcClient *ethclient.Client, poolAddress string, abiPath string, blockNumber *big.Int) *big.Int {
-	clPool := contract.NewCLPool(poolAddress, abiPath, rpcClient)
-	return clPool.StakedLiquidity(blockNumber)
-}
-
-func getLpSugarData(rpcClient *ethclient.Client, contractAddress, abiPath string, poolAddress common.Address, blockNumber *big.Int) *contract.Lp {
-	lpSugar := contract.NewLpSugar(contractAddress, abiPath, rpcClient)
-	lpData, err := lpSugar.ByAddress(poolAddress, blockNumber)
-	if err != nil {
-		log.Fatalf("Erro ao buscar dados da pool via LpSugar: %v", err)
-	}
-	return lpData
-}
-
 func main() {
-	rpcURL := "https://base.llamarpc.com"
-	rpcClient := client.Connect(rpcURL)
-	defer rpcClient.Close()
+	// RPC público da Base (substitua se usar outro RPC)
+	rpcURL := "https://base.llamarpc.com/sk_llama_983b3eb1da9b648371f7139f9c7f2b63" // ou outro válido
 
-	// Pegamos o número do bloco apenas para o CLPool
-	blockNumber, err := rpcClient.BlockNumber(context.Background())
+	client, err := ethclient.Dial(rpcURL)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Erro ao conectar ao nó RPC: %v", err)
 	}
-	blockNum := big.NewInt(int64(blockNumber))
 
-	// === CLPool ===
-	poolAddrStr := "0xD43Decd5Df4BDFFd5A4Cf35cA1f9557E33B7246C"
-	abiPathCL := "abis/slipstream_pool_abi.json"
-	staked := getStakedLiquidity(rpcClient, poolAddrStr, abiPathCL, blockNum)
-	fmt.Println("Staked Liquidity:", staked.String())
+	// Endereço da pool (CLPool) e caminho do arquivo ABI
+	poolAddress := "0xD43Decd5Df4BDFFd5A4Cf35cA1f9557E33B7246C"
+	abiPath := "abis/slipstream_pool_abi.json" // deve conter o método "slot0", "fee", etc.
 
-	// === LpSugar ===
-	lpSugarAddress := "0x73ffd28DFde56704F832163e6cD432FCbbD607a1"
-	abiPathLp := "abis/lp_sugar_abi.json"
-	poolAddress := common.HexToAddress(poolAddrStr)
+	pool := contract.NewCLPool(poolAddress, abiPath, client)
 
-	// Aqui passamos nil para usar o estado mais recente (igual ao BaseScan)
-	lpData := getLpSugarData(rpcClient, lpSugarAddress, abiPathLp, poolAddress, nil)
+	// Bloco mais recente: nil
+	block := (*big.Int)(nil)
 
-	fmt.Println("Symbol:", lpData.Symbol)
-	fmt.Println("Liquidity:", lpData.Liquidity.String())
-	fmt.Println("Gauge:", lpData.Gauge.Hex())
-	fmt.Println("Token0:", lpData.Token0.Hex())
-	fmt.Println("Reserve0:", lpData.Reserve0.String())
-	fmt.Println("Token1:", lpData.Token1.Hex())
-	fmt.Println("Reserve1:", lpData.Reserve1.String())
+	fmt.Println("== Informações da pool ==")
+
+	// Staked Liquidity
+	stakedLiquidity, err := pool.StakedLiquidity(block)
+	if err != nil {
+		log.Fatalf("Erro ao buscar stakedLiquidity: %v", err)
+	}
+
+	// 4. Chamar função utilitária
+	amount0, amount1, err := utils.GetCurrentAmountsInLiquidity(pool, stakedLiquidity, block, 6, 18)
+	if err != nil {
+		log.Fatalf("Erro ao calcular amounts: %v", err)
+	}
+
+	// 5. Imprimir resultado
+	fmt.Printf("Amount0: %f\n", amount0)
+	fmt.Printf("Amount1: %f\n", amount1)
+
+	tvl, err := utils.GetTVL(pool, stakedLiquidity, block, 6, 18)
+	if err != nil {
+		fmt.Println("Erro ao calcular TVL:", err)
+	} else {
+		fmt.Printf("TVL em USD: %.4f\n", tvl)
+	}
+
+	// 6. Emissions USD
+	emissionsUsd := utils.GetEmissionsUsd("0xD43Decd5Df4BDFFd5A4Cf35cA1f9557E33B7246C")
+	fmt.Printf("Emissions usd: %f\n", emissionsUsd)
+
+	apr, err := utils.CalculateAPR(emissionsUsd, tvl)
+	if err != nil {
+		log.Fatalf("Erro ao calcular APR: %v", err)
+	}
+
+	aprFormatted, _ := apr.Float64()
+	fmt.Printf("APR da pool: %.2f%%\n", aprFormatted)
+
 }
